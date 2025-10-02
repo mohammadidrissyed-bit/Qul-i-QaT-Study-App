@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Chat, Modality } from "@google/genai";
 import type { QuestionAnswer, Standard, ChatSession, MCQ, Subject } from '../types';
 import { CHAPTERS } from "../constants";
@@ -122,40 +123,62 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 
 export async function generateImageForTopic(topic: string, subject: Subject): Promise<string> {
     try {
-        // Pollinations.ai provides a simple, key-less, and free API for image generation.
-        // We create a detailed prompt to guide the model for better educational images.
-        const prompt = subject === 'Biology'
-            ? `A simple, clear, scientifically accurate educational diagram for the biology concept: "${topic}". Clean, modern textbook illustration style, minimal text, clear labels, vibrant colors, high quality, vector art.`
-            : `A simple, clear, and visually appealing educational diagram for the computer science concept: "${topic}". Modern infographic style, helps understand the core idea, avoids complex code, vibrant colors, high quality, vector art.`;
+        // --- STEP 1: Use Gemini to create a high-quality, visual prompt for the image generator ---
+        const imagePromptSchema = {
+            type: Type.OBJECT,
+            properties: {
+                prompt: {
+                    type: Type.STRING,
+                    description: "A descriptive, concise, and visually-focused prompt for an AI image generator.",
+                },
+            },
+            required: ["prompt"],
+        };
+        
+        const promptForGemini = `You are an expert in creating prompts for AI image generation. A student wants an educational diagram for the ${subject} topic: "${topic}". 
+Create a short, descriptive prompt for an AI image generator. The prompt must describe a simple, clear, and scientifically accurate visual diagram.
+CRITICAL INSTRUCTIONS:
+- The prompt MUST command the image generator to NOT include any text, words, or labels in the image.
+- Focus ONLY on the visual elements.
+- Example for "Photosynthesis": "A simple diagram showing a green plant absorbing sunlight, carbon dioxide from the air, and water from the soil. Show oxygen being released. Use clear arrows to indicate the flow. No text or labels."
+- Keep the prompt to a single, descriptive sentence.`;
 
-        // URL-encode the prompt to ensure it's safe to be used in a URL.
-        const encodedPrompt = encodeURIComponent(prompt);
-        // We append parameters for a standard image size.
+        const geminiResponse = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: promptForGemini,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: imagePromptSchema,
+                temperature: 0.2, // Lower temperature for more focused, less creative prompts
+            },
+        });
+        
+        const parsedData = JSON.parse(geminiResponse.text.trim());
+        const visualPrompt = parsedData.prompt + ", clean, modern textbook illustration style, vibrant colors, high quality, vector art, no words, no text, no labels.";
+        
+        // --- STEP 2: Use the generated prompt with the free image service ---
+        const encodedPrompt = encodeURIComponent(visualPrompt);
         const POLLINATIONS_URL = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=768&nologo=true`;
 
         const response = await fetch(POLLINATIONS_URL);
 
         if (!response.ok) {
-            // Provide a user-friendly error if the service is down.
             throw new Error(`The free image generation service may be temporarily unavailable (Status: ${response.status}). Please try again in a moment.`);
         }
 
         const imageBlob = await response.blob();
         
-        // Ensure the response is an image before processing.
         if (imageBlob.type.startsWith('image/')) {
             return await blobToBase64(imageBlob);
         } else {
-             // Handle cases where the service might return an error message instead of an image.
             const errorText = await imageBlob.text();
             console.error("Pollinations.ai returned non-image data:", errorText);
-            throw new Error("The image generation model did not return a valid image. It may be under maintenance.");
+            throw new Error("The image generation model did not return a valid image.");
         }
 
     } catch (error) {
-        console.error("Error generating image with Pollinations.ai:", error);
-        // Re-throw with a user-friendly message.
-        if (error instanceof Error && error.message) {
+        console.error("Error in two-step image generation:", error);
+        if (error instanceof Error) {
             throw new Error(error.message);
         }
         throw new Error("Failed to visualize the concept. Please try again.");
