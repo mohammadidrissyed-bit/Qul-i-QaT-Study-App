@@ -1,10 +1,13 @@
-
 import { GoogleGenAI, Type, Chat, Modality } from "@google/genai";
 import type { QuestionAnswer, Standard, ChatSession, MCQ, Subject } from '../types';
 import { CHAPTERS } from "../constants";
 
 if (!process.env.API_KEY) {
     throw new Error("API_KEY environment variable not set");
+}
+
+if (!process.env.HF_API_KEY) {
+    console.warn("HF_API_KEY environment variable not set. Image generation will be disabled.");
 }
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -103,40 +106,25 @@ export async function getTopicContent(topic: string, chapterName: string, standa
   }
 }
 
-// Helper function to convert Blob to Base64
-const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-            if (typeof reader.result === 'string') {
-                // reader.result is "data:image/jpeg;base64,xxxxxxxx..."
-                // we only want the base64 part: "xxxxxxxx..."
-                resolve(reader.result.split(',')[1]);
-            } else {
-                reject(new Error("Failed to read blob as a Base64 string."));
-            }
-        };
-        reader.onerror = (error) => reject(error);
-        reader.readAsDataURL(blob);
-    });
-};
-
 export async function generateImageForTopic(topic: string, subject: Subject): Promise<string> {
+    if (!process.env.HF_API_KEY) {
+         throw new Error("Hugging Face API key is not configured. Cannot generate image.");
+    }
+    
+    // This is the official Inference Provider URL for this model you discovered.
+    const INFERENCE_PROVIDER_URL = "https://router.huggingface.co/nscale/v1/images/generations";
+    const MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0";
+
     try {
-        // --- STEP 1: Use Gemini to create a high-quality, visual prompt for the image generator ---
         const imagePromptSchema = {
             type: Type.OBJECT,
             properties: {
-                prompt: {
-                    type: Type.STRING,
-                    description: "A descriptive, concise, and visually-focused prompt for an AI image generator.",
-                },
+                prompt: { type: Type.STRING, description: "A descriptive, concise, and visually-focused prompt for an AI image generator." },
             },
             required: ["prompt"],
         };
         
-        const promptForGemini = `You are an expert in creating prompts for AI image generation. A student wants an educational diagram for the ${subject} topic: "${topic}". 
-Create a short, descriptive prompt for an AI image generator. The prompt must describe a simple, clear, and scientifically accurate visual diagram.
+        const promptForGemini = `You are an expert in creating prompts for AI image generation. A student wants an educational diagram for the ${subject} topic: "${topic}". Create a short, descriptive prompt for an AI image generator. The prompt must describe a simple, clear, and scientifically accurate visual diagram.
 CRITICAL INSTRUCTIONS:
 - The prompt MUST command the image generator to NOT include any text, words, or labels in the image.
 - Focus ONLY on the visual elements.
@@ -149,36 +137,49 @@ CRITICAL INSTRUCTIONS:
             config: {
                 responseMimeType: "application/json",
                 responseSchema: imagePromptSchema,
-                temperature: 0.2, // Lower temperature for more focused, less creative prompts
+                temperature: 0.2, 
             },
         });
         
         const parsedData = JSON.parse(geminiResponse.text.trim());
         const visualPrompt = parsedData.prompt + ", clean, modern textbook illustration style, vibrant colors, high quality, vector art, no words, no text, no labels.";
         
-        // --- STEP 2: Use the generated prompt with the free image service ---
-        const encodedPrompt = encodeURIComponent(visualPrompt);
-        const POLLINATIONS_URL = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=768&nologo=true`;
 
-        const response = await fetch(POLLINATIONS_URL);
-
+        const response = await fetch(INFERENCE_PROVIDER_URL, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.HF_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                prompt: visualPrompt,
+                model: MODEL_ID,
+                response_format: "b64_json",
+            }),
+        });
+        
         if (!response.ok) {
-            throw new Error(`The free image generation service may be temporarily unavailable (Status: ${response.status}). Please try again in a moment.`);
+            const errorBody = await response.text();
+            console.error("Hugging Face API Error:", errorBody);
+            if (response.status === 503) {
+                 throw new Error("The visualization model is currently loading. Please wait about 20 seconds and try again.");
+            }
+            throw new Error(`Failed to generate image. Status: ${response.status}.`);
         }
 
-        const imageBlob = await response.blob();
+        const resultJson = await response.json();
         
-        if (imageBlob.type.startsWith('image/')) {
-            return await blobToBase64(imageBlob);
+        if (resultJson.image) {
+            // The API returns a base64 string directly, no need to convert a blob.
+            return resultJson.image;
         } else {
-            const errorText = await imageBlob.text();
-            console.error("Pollinations.ai returned non-image data:", errorText);
-            throw new Error("The image generation model did not return a valid image.");
+            console.error("Hugging Face API returned unexpected JSON:", resultJson);
+            throw new Error("The model did not return a valid image. It may be under maintenance.");
         }
 
     } catch (error) {
-        console.error("Error in two-step image generation:", error);
-        if (error instanceof Error) {
+        console.error("Error generating image with Hugging Face:", error);
+        if (error instanceof Error && error.message) {
             throw new Error(error.message);
         }
         throw new Error("Failed to visualize the concept. Please try again.");
@@ -236,46 +237,6 @@ export async function getMCQsForTopic(topic: string, subject: Subject): Promise<
         throw new Error(`Failed to generate a quiz for: "${topic}". Please try again.`);
     }
 }
-
-export async function getELI5ForTopic(topic: string, subject: Subject): Promise<string> {
-    const eli5Schema = {
-        type: Type.OBJECT,
-        properties: {
-            explanation: {
-                type: Type.STRING,
-                description: "An ultra-simplified explanation of the topic, suitable for a 5-year-old, using simple analogies and avoiding jargon.",
-            },
-        },
-        required: ["explanation"],
-    };
-
-    try {
-        const prompt = `You are a friendly and patient teacher explaining a complex topic to a very curious 5-year-old child.
-For the ${subject} topic: "${topic}", explain it in the simplest way possible.
-Use very short sentences, everyday words, and a fun, simple analogy.
-For example, if the topic is 'Computer Virus', you could say 'Imagine your computer is like your body. A virus is like a tiny germ that makes your computer sick, so it can't play games or work properly.'
-Make it 1-2 short paragraphs.`;
-
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: eli5Schema,
-            },
-        });
-        
-        const jsonText = response.text.trim();
-        const parsedData = JSON.parse(jsonText);
-        return parsedData.explanation;
-
-    } catch (error)
- {
-        console.error(`Error generating ELI5 for topic "${topic}":`, error);
-        throw new Error(`Failed to simplify the topic: "${topic}". Please try again.`);
-    }
-}
-
 
 export function startChatSession(standard: Standard, subject: Subject, chapter?: string): ChatSession {
     let systemInstruction = `You are an expert ${subject} tutor for students in India, following the NCERT syllabus for "${standard}".`;
