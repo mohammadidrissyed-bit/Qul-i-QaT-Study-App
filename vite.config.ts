@@ -8,5 +8,6 @@ export default defineConfig({
     // This makes the environment variables available to the client-side code.
     // Vercel will populate process.env with the project's environment variables.
     'process.env.API_KEY': `"${process.env.VITE_API_KEY}"`,
+    'process.env.HF_API_KEY': `"${process.env.VITE_HF_API_KEY}"`,
   }
 })
