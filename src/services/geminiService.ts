@@ -129,8 +129,8 @@ export async function generateImageForTopic(topic: string, subject: Subject): Pr
          throw new Error("Hugging Face API key is not configured. Cannot generate image.");
     }
     
-    // Using Stable Diffusion XL as it's a powerful and fast open-source model.
-    const HUGGING_FACE_MODEL_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0";
+    // Using an open model that doesn't require accepting terms to fix the 403 error.
+    const HUGGING_FACE_MODEL_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5";
 
     try {
         // Enhanced prompt for better results with Stable Diffusion
