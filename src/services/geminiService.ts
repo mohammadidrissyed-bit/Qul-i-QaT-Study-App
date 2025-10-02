@@ -6,10 +6,6 @@ if (!process.env.API_KEY) {
     throw new Error("API_KEY environment variable not set");
 }
 
-if (!process.env.HF_API_KEY) {
-    console.warn("HF_API_KEY environment variable not set. Image generation will be disabled.");
-}
-
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const getAnswerPrompt = (topic: string, chapterName: string, standard: Standard, subject: Subject): string => {
@@ -125,54 +121,40 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 };
 
 export async function generateImageForTopic(topic: string, subject: Subject): Promise<string> {
-    if (!process.env.HF_API_KEY) {
-         throw new Error("Hugging Face API key is not configured. Cannot generate image.");
-    }
-    
-    // FINAL FIX: Using a confirmed working, popular, and free model.
-    const HUGGING_FACE_MODEL_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5";
-
     try {
-        // Enhanced prompt for better results with Stable Diffusion
+        // Pollinations.ai provides a simple, key-less, and free API for image generation.
+        // We create a detailed prompt to guide the model for better educational images.
         const prompt = subject === 'Biology'
             ? `A simple, clear, scientifically accurate educational diagram for the biology concept: "${topic}". Clean, modern textbook illustration style, minimal text, clear labels, vibrant colors, high quality, vector art.`
             : `A simple, clear, and visually appealing educational diagram for the computer science concept: "${topic}". Modern infographic style, helps understand the core idea, avoids complex code, vibrant colors, high quality, vector art.`;
 
-        const response = await fetch(HUGGING_FACE_MODEL_URL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.HF_API_KEY}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                inputs: prompt,
-            }),
-        });
-        
+        // URL-encode the prompt to ensure it's safe to be used in a URL.
+        const encodedPrompt = encodeURIComponent(prompt);
+        // We append parameters for a standard image size.
+        const POLLINATIONS_URL = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=768&nologo=true`;
+
+        const response = await fetch(POLLINATIONS_URL);
+
         if (!response.ok) {
-            const errorBody = await response.text();
-            console.error("Hugging Face API Error:", errorBody);
-            // The HF API returns a 503 error when the model is loading, which can take some time on the first request.
-            if (response.status === 503) {
-                 throw new Error("The visualization model is currently loading. Please wait about 20 seconds and try again.");
-            }
-            throw new Error(`Failed to generate image. Status: ${response.status}.`);
+            // Provide a user-friendly error if the service is down.
+            throw new Error(`The free image generation service may be temporarily unavailable (Status: ${response.status}). Please try again in a moment.`);
         }
 
         const imageBlob = await response.blob();
         
+        // Ensure the response is an image before processing.
         if (imageBlob.type.startsWith('image/')) {
             return await blobToBase64(imageBlob);
         } else {
-             // Sometimes the API returns a JSON error payload even with a 200 OK status.
+             // Handle cases where the service might return an error message instead of an image.
             const errorText = await imageBlob.text();
-            console.error("Hugging Face API returned non-image data:", errorText);
-            throw new Error("The model did not return a valid image. It may be under maintenance.");
+            console.error("Pollinations.ai returned non-image data:", errorText);
+            throw new Error("The image generation model did not return a valid image. It may be under maintenance.");
         }
 
     } catch (error) {
-        console.error("Error generating image with Hugging Face:", error);
-        // Re-throw with a user-friendly message, preserving the original if it's informative.
+        console.error("Error generating image with Pollinations.ai:", error);
+        // Re-throw with a user-friendly message.
         if (error instanceof Error && error.message) {
             throw new Error(error.message);
         }
